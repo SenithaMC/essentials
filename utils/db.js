@@ -22,7 +22,7 @@ class Database {
           user_id TEXT,
           guild_id TEXT,
           xp INTEGER DEFAULT 0,
-          level INTEGER DEFAULT 1,  -- Changed from 0 to 1
+          level INTEGER DEFAULT 1,
           background TEXT DEFAULT NULL,
           PRIMARY KEY (user_id, guild_id)
         )
@@ -36,6 +36,152 @@ class Database {
           level_up_messages BOOLEAN DEFAULT TRUE
         )
       `);
+
+      // Multipliers table
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS multipliers (
+          guild_id TEXT,
+          target_type TEXT, -- 'role' or 'channel'
+          target_id TEXT,
+          multiplier REAL DEFAULT 1.0,
+          PRIMARY KEY (guild_id, target_type, target_id)
+        )
+      `);
+
+      // Blacklist table
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS blacklist (
+          guild_id TEXT,
+          type TEXT, -- 'role', 'user', or 'channel'
+          target_id TEXT,
+          PRIMARY KEY (guild_id, type, target_id)
+        )
+      `);
+    });
+  }
+
+  // Multiplier methods
+  async setMultiplier(guildId, targetType, targetId, multiplier) {
+    return new Promise((resolve, reject) => {
+      this.db.run(
+        `INSERT OR REPLACE INTO multipliers (guild_id, target_type, target_id, multiplier) 
+         VALUES (?, ?, ?, ?)`,
+        [guildId, targetType, targetId, multiplier],
+        function(err) {
+          if (err) reject(err);
+          else resolve();
+        }
+      );
+    });
+  }
+
+  async removeMultiplier(guildId, targetType, targetId) {
+    return new Promise((resolve, reject) => {
+      this.db.run(
+        'DELETE FROM multipliers WHERE guild_id = ? AND target_type = ? AND target_id = ?',
+        [guildId, targetType, targetId],
+        function(err) {
+          if (err) reject(err);
+          else resolve();
+        }
+      );
+    });
+  }
+
+  async getMultipliers(guildId) {
+    return new Promise((resolve, reject) => {
+      this.db.all(
+        'SELECT * FROM multipliers WHERE guild_id = ?',
+        [guildId],
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows || []);
+        }
+      );
+    });
+  }
+
+  async getMultiplierForTarget(guildId, targetType, targetId) {
+    return new Promise((resolve, reject) => {
+      this.db.get(
+        'SELECT multiplier FROM multipliers WHERE guild_id = ? AND target_type = ? AND target_id = ?',
+        [guildId, targetType, targetId],
+        (err, row) => {
+          if (err) reject(err);
+          else resolve(row ? row.multiplier : 1.0);
+        }
+      );
+    });
+  }
+
+  // Blacklist methods
+  async addToBlacklist(guildId, type, targetId) {
+    return new Promise((resolve, reject) => {
+      this.db.run(
+        'INSERT OR REPLACE INTO blacklist (guild_id, type, target_id) VALUES (?, ?, ?)',
+        [guildId, type, targetId],
+        function(err) {
+          if (err) reject(err);
+          else resolve();
+        }
+      );
+    });
+  }
+
+  async removeFromBlacklist(guildId, type, targetId) {
+    return new Promise((resolve, reject) => {
+      this.db.run(
+        'DELETE FROM blacklist WHERE guild_id = ? AND type = ? AND target_id = ?',
+        [guildId, type, targetId],
+        function(err) {
+          if (err) reject(err);
+          else resolve();
+        }
+      );
+    });
+  }
+
+  async getBlacklist(guildId) {
+    return new Promise((resolve, reject) => {
+      this.db.all(
+        'SELECT * FROM blacklist WHERE guild_id = ?',
+        [guildId],
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows || []);
+        }
+      );
+    });
+  }
+
+  async isBlacklisted(guildId, userId, channelId, userRoles = []) {
+    return new Promise((resolve, reject) => {
+      this.db.all(
+        'SELECT * FROM blacklist WHERE guild_id = ?',
+        [guildId],
+        (err, rows) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+
+          for (const item of rows) {
+            if (item.type === 'user' && item.target_id === userId) {
+              resolve(true);
+              return;
+            }
+            if (item.type === 'channel' && item.target_id === channelId) {
+              resolve(true);
+              return;
+            }
+            if (item.type === 'role' && userRoles.includes(item.target_id)) {
+              resolve(true);
+              return;
+            }
+          }
+          resolve(false);
+        }
+      );
     });
   }
 
@@ -46,8 +192,20 @@ class Database {
         'SELECT * FROM users WHERE user_id = ? AND guild_id = ?',
         [userId, guildId],
         (err, row) => {
-          if (err) reject(err);
-          else resolve(row || { user_id: userId, guild_id: guildId, xp: 0, level: 1, background: null }); // Start at level 1
+          if (err) {
+            reject(err);
+            return;
+          }
+          
+          if (row) {
+            // Ensure the background path is properly formatted
+            if (row.background && !row.background.startsWith('./data/backgrounds/')) {
+              row.background = `./data/backgrounds/${row.background}`;
+            }
+            resolve(row);
+          } else {
+            resolve({ user_id: userId, guild_id: guildId, xp: 0, level: 1, background: null });
+          }
         }
       );
     });
@@ -68,13 +226,10 @@ class Database {
   }
 
   calculateLevel(xp) {
-    // Level formula: level = floor(0.1 * sqrt(xp)) + 1
-    // This ensures level starts at 1 when xp = 0
     return Math.floor(0.1 * Math.sqrt(xp)) + 1;
   }
 
   calculateXPForLevel(level) {
-    // Reverse of calculateLevel: xp = ((level - 1) / 0.1)^2
     return Math.floor(Math.pow((level - 1) / 0.1, 2));
   }
 
@@ -92,11 +247,15 @@ class Database {
     });
   }
 
-  async setBackground(userId, guildId, backgroundUrl) {
+  async setBackground(userId, guildId, backgroundPath) {
     return new Promise((resolve, reject) => {
+      // Ensure the path is stored correctly
+      const storedPath = backgroundPath.startsWith('./data/backgrounds/') ? 
+        backgroundPath : `./data/backgrounds/${backgroundPath}`;
+      
       this.db.run(
         'UPDATE users SET background = ? WHERE user_id = ? AND guild_id = ?',
-        [backgroundUrl, userId, guildId],
+        [storedPath, userId, guildId],
         function(err) {
           if (err) reject(err);
           else resolve();
@@ -173,7 +332,7 @@ class Database {
 
   async removeLevelAdmin(userId, guildId, levels) {
     const user = await this.getUser(userId, guildId);
-    const newLevel = Math.max(1, user.level - levels); // Minimum level is 1
+    const newLevel = Math.max(1, user.level - levels);
     const newXP = this.calculateXPForLevel(newLevel);
     await this.updateUser(userId, guildId, newXP, newLevel);
     return { newXP, newLevel };
