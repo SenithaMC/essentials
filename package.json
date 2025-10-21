@@ -1,0 +1,20 @@
+{
+  "name": "lwky.levels",
+  "version": "1.0",
+  "author": "not_void",
+  "description": "A Discord leveling bot with rank cards",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^0.1.46",
+    "adm-zip": "^0.5.16",
+    "discord.js": "^14.14.1",
+    "sqlite3": "^5.1.6"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
